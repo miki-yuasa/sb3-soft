@@ -10,7 +10,7 @@ from typing import Any, NamedTuple, Optional, Union
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common.buffers import DictReplayBuffer, ReplayBuffer
 from stable_baselines3.common.vec_env import VecNormalize
 
 
@@ -19,11 +19,11 @@ class SDSACReplayBufferSamples(NamedTuple):
 
     Attributes
     ----------
-    observations : th.Tensor
+    observations : th.Tensor | dict[str, th.Tensor]
         Batch of observations.
     actions : th.Tensor
         Batch of actions.
-    next_observations : th.Tensor
+    next_observations : th.Tensor | dict[str, th.Tensor]
         Batch of next observations.
     dones : th.Tensor
         Batch of done flags.
@@ -36,9 +36,9 @@ class SDSACReplayBufferSamples(NamedTuple):
         Per-sample discount factors (used by n-step buffers).
     """
 
-    observations: th.Tensor
+    observations: Union[th.Tensor, dict[str, th.Tensor]]
     actions: th.Tensor
-    next_observations: th.Tensor
+    next_observations: Union[th.Tensor, dict[str, th.Tensor]]
     dones: th.Tensor
     rewards: th.Tensor
     old_entropies: th.Tensor
@@ -127,7 +127,7 @@ class SDSACReplayBuffer(ReplayBuffer):
 
         super().add(obs, next_obs, action, reward, done, infos)
 
-    def _get_samples(
+    def _get_samples(  # type: ignore[override]
         self,
         batch_inds: np.ndarray,
         env: Optional[VecNormalize] = None,
@@ -145,18 +145,131 @@ class SDSACReplayBuffer(ReplayBuffer):
             next_obs = self._normalize_obs(
                 self.next_observations[batch_inds, env_indices, :], env
             )
+        assert not isinstance(next_obs, dict)
 
-        data = (
-            self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
-            self.actions[batch_inds, env_indices, :],
-            next_obs,
-            (
+        observations_np = self._normalize_obs(
+            self.observations[batch_inds, env_indices, :], env
+        )
+        assert not isinstance(observations_np, dict)
+
+        observations = self.to_torch(observations_np)
+        actions = self.to_torch(self.actions[batch_inds, env_indices, :])
+        next_observations = self.to_torch(next_obs)
+        dones = self.to_torch(
+            self.dones[batch_inds, env_indices]
+            * (1 - self.timeouts[batch_inds, env_indices])
+        ).reshape(-1, 1)
+        rewards = self.to_torch(
+            self._normalize_reward(
+                self.rewards[batch_inds, env_indices].reshape(-1, 1), env
+            )
+        )
+        old_entropies = self.to_torch(
+            self.old_entropies[batch_inds, env_indices].reshape(-1, 1)
+        )
+        return SDSACReplayBufferSamples(
+            observations=observations,
+            actions=actions,
+            next_observations=next_observations,
+            dones=dones,
+            rewards=rewards,
+            old_entropies=old_entropies,
+        )
+
+
+class SDSACDictReplayBuffer(DictReplayBuffer):
+    """Dict replay buffer that additionally stores per-transition entropy."""
+
+    old_entropies: np.ndarray
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Dict,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+    ) -> None:
+        super().__init__(
+            buffer_size,
+            observation_space,
+            action_space,
+            device=device,
+            n_envs=n_envs,
+            optimize_memory_usage=optimize_memory_usage,
+            handle_timeout_termination=handle_timeout_termination,
+        )
+        self.old_entropies = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self._pending_entropy: Optional[np.ndarray] = None
+
+    def set_entropy(self, entropy: np.ndarray) -> None:
+        """Stage entropy values to be written on the next :meth:`add` call."""
+        self._pending_entropy = np.asarray(entropy, dtype=np.float32).reshape(
+            self.n_envs
+        )
+
+    def add(  # type: ignore[override]
+        self,
+        obs: dict[str, np.ndarray],
+        next_obs: dict[str, np.ndarray],
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        infos: list[dict[str, Any]],
+    ) -> None:
+        """Store a transition, including any staged entropy."""
+        if self._pending_entropy is not None:
+            self.old_entropies[self.pos] = self._pending_entropy
+            self._pending_entropy = None
+        else:
+            self.old_entropies[self.pos] = 0.0
+
+        super().add(obs, next_obs, action, reward, done, infos)
+
+    def _get_samples(  # type: ignore[override]
+        self,
+        batch_inds: np.ndarray,
+        env: Optional[VecNormalize] = None,
+    ) -> SDSACReplayBufferSamples:
+        """Return a batch of dict transitions including old entropies."""
+        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
+
+        obs_ = self._normalize_obs(
+            {
+                key: obs[batch_inds, env_indices, :]
+                for key, obs in self.observations.items()
+            },
+            env,
+        )
+        next_obs_ = self._normalize_obs(
+            {
+                key: obs[batch_inds, env_indices, :]
+                for key, obs in self.next_observations.items()
+            },
+            env,
+        )
+
+        assert isinstance(obs_, dict)
+        assert isinstance(next_obs_, dict)
+        observations = {key: self.to_torch(obs) for key, obs in obs_.items()}
+        next_observations = {key: self.to_torch(obs) for key, obs in next_obs_.items()}
+
+        return SDSACReplayBufferSamples(
+            observations=observations,
+            actions=self.to_torch(self.actions[batch_inds, env_indices]),
+            next_observations=next_observations,
+            dones=self.to_torch(
                 self.dones[batch_inds, env_indices]
                 * (1 - self.timeouts[batch_inds, env_indices])
             ).reshape(-1, 1),
-            self._normalize_reward(
-                self.rewards[batch_inds, env_indices].reshape(-1, 1), env
+            rewards=self.to_torch(
+                self._normalize_reward(
+                    self.rewards[batch_inds, env_indices].reshape(-1, 1), env
+                )
             ),
-            self.old_entropies[batch_inds, env_indices].reshape(-1, 1),
+            old_entropies=self.to_torch(
+                self.old_entropies[batch_inds, env_indices].reshape(-1, 1)
+            ),
         )
-        return SDSACReplayBufferSamples(*tuple(map(self.to_torch, data)))

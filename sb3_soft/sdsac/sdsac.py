@@ -23,13 +23,16 @@ import numpy as np
 import torch as th
 from gymnasium import spaces
 from stable_baselines3.common.buffers import ReplayBuffer
-from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_parameters_by_name, polyak_update
 
-from .buffers import SDSACReplayBuffer, SDSACReplayBufferSamples
+from .buffers import (
+    SDSACDictReplayBuffer,
+    SDSACReplayBuffer,
+    SDSACReplayBufferSamples,
+)
 from .policies import (
     CnnPolicy,
     DiscreteActor,
@@ -85,8 +88,6 @@ class SDSAC(OffPolicyAlgorithm):
     gradient_steps : int, default=1
         Gradient updates per rollout step.  ``-1`` means as many as
         environment steps collected.
-    action_noise : ActionNoise | None, default=None
-        Optional exploration noise.
     replay_buffer_class : type[ReplayBuffer] | None, default=None
         Custom replay buffer class.  Defaults to
         :class:`~sb3_soft.sdsac.buffers.SDSACReplayBuffer`.
@@ -146,8 +147,7 @@ class SDSAC(OffPolicyAlgorithm):
         gamma: float = 0.99,
         train_freq: Union[int, tuple[int, str]] = 1,
         gradient_steps: int = 1,
-        action_noise: Optional[ActionNoise] = None,
-        replay_buffer_class: Optional[type[SDSACReplayBuffer]] = None,
+        replay_buffer_class: Optional[type[ReplayBuffer]] = None,
         replay_buffer_kwargs: Optional[dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         n_steps: int = 1,
@@ -164,10 +164,6 @@ class SDSAC(OffPolicyAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
     ) -> None:
-        # Default to SDSACReplayBuffer when no custom class is provided.
-        if replay_buffer_class is None:
-            replay_buffer_class = SDSACReplayBuffer
-
         super().__init__(
             policy,
             env,
@@ -179,7 +175,6 @@ class SDSAC(OffPolicyAlgorithm):
             gamma,
             train_freq,
             gradient_steps,
-            action_noise,
             replay_buffer_class=replay_buffer_class,
             replay_buffer_kwargs=replay_buffer_kwargs,
             optimize_memory_usage=optimize_memory_usage,
@@ -211,6 +206,12 @@ class SDSAC(OffPolicyAlgorithm):
     # ------------------------------------------------------------------
 
     def _setup_model(self) -> None:
+        if self.replay_buffer_class is None:
+            if isinstance(self.observation_space, spaces.Dict):
+                self.replay_buffer_class = SDSACDictReplayBuffer
+            else:
+                self.replay_buffer_class = SDSACReplayBuffer
+
         super()._setup_model()
         self._create_aliases()
 
@@ -270,12 +271,10 @@ class SDSAC(OffPolicyAlgorithm):
         writes it to the :class:`SDSACReplayBuffer` at the current
         position *before* the base class increments the write pointer.
         """
-        if isinstance(replay_buffer, SDSACReplayBuffer):
+        if isinstance(replay_buffer, (SDSACReplayBuffer, SDSACDictReplayBuffer)):
             with th.no_grad():
-                obs_tensor = th.as_tensor(
-                    self._last_obs,
-                    device=self.device,  # type: ignore[arg-type]
-                ).float()
+                assert self._last_obs is not None
+                obs_tensor, _ = self.policy.obs_to_tensor(self._last_obs)
                 probs, log_probs = self.actor.get_action_probs(obs_tensor)
                 # H = -sum_a pi(a|s) log pi(a|s), shape (n_envs,)
                 entropy = -(probs * log_probs).sum(dim=-1).cpu().numpy()
