@@ -307,6 +307,7 @@ class SDSAC(OffPolicyAlgorithm):
         ent_coefs: list[float] = []
         actor_losses: list[float] = []
         critic_losses: list[float] = []
+        ent_penalties: list[float] = []
 
         for gradient_step in range(gradient_steps):
             # ---- Sample replay buffer ----
@@ -436,6 +437,7 @@ class SDSAC(OffPolicyAlgorithm):
             actor_loss = actor_loss + entropy_penalty
 
             actor_losses.append(actor_loss.item())
+            ent_penalties.append(entropy_penalty.item())
 
             # Optimize actor
             self.actor.optimizer.zero_grad()
@@ -461,6 +463,7 @@ class SDSAC(OffPolicyAlgorithm):
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
         self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
+        self.logger.record("train/ent_penalty", np.mean(ent_penalties))
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
