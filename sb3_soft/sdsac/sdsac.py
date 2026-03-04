@@ -397,9 +397,7 @@ class SDSAC(OffPolicyAlgorithm):
                 q_local_a = th.gather(q_local, dim=1, index=actions_long)  # (B, 1)
                 q_target_a = th.gather(q_target, dim=1, index=actions_long)  # (B, 1)
                 q_local_a = th.nan_to_num(q_local_a, nan=0.0, posinf=1e6, neginf=-1e6)
-                q_target_a = th.nan_to_num(
-                    q_target_a, nan=0.0, posinf=1e6, neginf=-1e6
-                )
+                q_target_a = th.nan_to_num(q_target_a, nan=0.0, posinf=1e6, neginf=-1e6)
                 q_taken_means.append(q_local_a.mean())
                 loss_plain = (q_local_a - target_q_values).pow(2)  # (B, 1)
                 q_clipped = q_target_a + th.clamp(
