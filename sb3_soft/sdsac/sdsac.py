@@ -10,6 +10,8 @@ Key differences from continuous SAC and naive discrete SAC:
   input), enabling exact expectation computation.
 - **Double-average Q-learning**: the target uses ``mean`` (not ``min``)
   of the twin target critics.
+- The actor objective also uses the ``mean`` of twin online critics
+    (instead of ``min``) for policy improvement.
 - **Q-clip**: the critic loss is
   ``max((Q - y)², (Q' + clip(Q - Q', -c, c) - y)²)``.
 - **Entropy-penalty**: the actor loss includes
@@ -57,6 +59,8 @@ class SDSAC(OffPolicyAlgorithm):
 
     1. **Double-average Q-learning** – the Bellman target uses
        ``mean(Q'_1, Q'_2)`` of the twin target critics instead of ``min``.
+         The actor objective likewise uses the mean of online critics
+         ``mean(Q_1, Q_2)`` in place of a clipped-min estimate.
     2. **Q-clip** – the critic loss is
        ``max((Q - y)^2, (Q' + clip(Q - Q', -c, c) - y)^2)``.
     3. **Entropy penalty** – the actor loss adds
@@ -434,14 +438,14 @@ class SDSAC(OffPolicyAlgorithm):
                 q_values_all = th.stack(
                     self.critic(replay_data.observations), dim=0
                 )  # (n_critics, B, |A|)
-                q_values_min, _ = q_values_all.min(dim=0)  # (B, |A|)
-                q_values_min = th.nan_to_num(
-                    q_values_min, nan=0.0, posinf=1e6, neginf=-1e6
+                q_values_avg = q_values_all.mean(dim=0)  # (B, |A|)
+                q_values_avg = th.nan_to_num(
+                    q_values_avg, nan=0.0, posinf=1e6, neginf=-1e6
                 )
 
             # J_pi = E_s [ sum_a pi(a|s) * (alpha * log pi(a|s) - Q(s,a)) ]
             actor_loss = (
-                (probs_pi * (ent_coef * log_probs_pi - q_values_min)).sum(dim=1).mean()
+                (probs_pi * (ent_coef * log_probs_pi - q_values_avg)).sum(dim=1).mean()
             )
             actor_loss = th.nan_to_num(actor_loss, nan=0.0, posinf=1e6, neginf=-1e6)
 
