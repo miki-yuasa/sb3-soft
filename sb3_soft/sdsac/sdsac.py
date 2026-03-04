@@ -308,6 +308,9 @@ class SDSAC(OffPolicyAlgorithm):
         actor_losses: list[float] = []
         critic_losses: list[float] = []
         ent_penalties: list[float] = []
+        q_value_means: list[float] = []
+        q_value_means_qf0: list[float] = []
+        q_value_means_qf1: list[float] = []
 
         for gradient_step in range(gradient_steps):
             # ---- Sample replay buffer ----
@@ -385,9 +388,11 @@ class SDSAC(OffPolicyAlgorithm):
             # Q-clip loss (Algorithm 1, line 10):
             # L(theta_i) = max((Q_i - y)^2, (Q'_i + clip(Q_i - Q'_i, -c, c) - y)^2)
             critic_loss = th.zeros(1, device=self.device)
+            q_taken_means: list[th.Tensor] = []
             for q_local, q_target in zip(current_q_all, target_q_all):
                 q_local_a = th.gather(q_local, dim=1, index=actions_long)  # (B, 1)
                 q_target_a = th.gather(q_target, dim=1, index=actions_long)  # (B, 1)
+                q_taken_means.append(q_local_a.mean())
                 loss_plain = (q_local_a - target_q_values).pow(2)  # (B, 1)
                 q_clipped = q_target_a + th.clamp(
                     q_local_a - q_target_a,
@@ -396,6 +401,12 @@ class SDSAC(OffPolicyAlgorithm):
                 )
                 loss_clipped = (q_clipped - target_q_values).pow(2)  # (B, 1)
                 critic_loss = critic_loss + th.max(loss_plain, loss_clipped).mean()
+
+            if len(q_taken_means) > 0:
+                q_value_means.append(th.stack(q_taken_means).mean().item())
+                q_value_means_qf0.append(q_taken_means[0].item())
+                if len(q_taken_means) > 1:
+                    q_value_means_qf1.append(q_taken_means[1].item())
 
             assert isinstance(critic_loss, th.Tensor)
             critic_losses.append(critic_loss.item())
@@ -464,6 +475,12 @@ class SDSAC(OffPolicyAlgorithm):
         self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
         self.logger.record("train/ent_penalty", np.mean(ent_penalties))
+        if len(q_value_means) > 0:
+            self.logger.record("train/q_value_mean", np.mean(q_value_means))
+        if len(q_value_means_qf0) > 0:
+            self.logger.record("train/q_value_mean_qf0", np.mean(q_value_means_qf0))
+        if len(q_value_means_qf1) > 0:
+            self.logger.record("train/q_value_mean_qf1", np.mean(q_value_means_qf1))
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
