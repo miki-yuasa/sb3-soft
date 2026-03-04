@@ -330,6 +330,7 @@ class SDSAC(OffPolicyAlgorithm):
 
             # Per-state policy entropy: H = -sum_a pi(a|s) log pi(a|s)
             entropy = -(probs * log_probs).sum(dim=1, keepdim=True)  # (B, 1)
+            entropy = th.nan_to_num(entropy, nan=0.0, posinf=1e6, neginf=0.0)
 
             # ---- Entropy coefficient (alpha) ----
             ent_coef_loss = None
@@ -375,6 +376,9 @@ class SDSAC(OffPolicyAlgorithm):
                 target_q_values = (
                     replay_data.rewards + (1 - replay_data.dones) * discounts * next_v
                 )  # (B, 1)
+                target_q_values = th.nan_to_num(
+                    target_q_values, nan=0.0, posinf=1e6, neginf=-1e6
+                )
 
                 # Target-critic Q-values for Q-clip (need per-critic)
                 target_q_all = self.critic_target(
@@ -392,6 +396,10 @@ class SDSAC(OffPolicyAlgorithm):
             for q_local, q_target in zip(current_q_all, target_q_all):
                 q_local_a = th.gather(q_local, dim=1, index=actions_long)  # (B, 1)
                 q_target_a = th.gather(q_target, dim=1, index=actions_long)  # (B, 1)
+                q_local_a = th.nan_to_num(q_local_a, nan=0.0, posinf=1e6, neginf=-1e6)
+                q_target_a = th.nan_to_num(
+                    q_target_a, nan=0.0, posinf=1e6, neginf=-1e6
+                )
                 q_taken_means.append(q_local_a.mean())
                 loss_plain = (q_local_a - target_q_values).pow(2)  # (B, 1)
                 q_clipped = q_target_a + th.clamp(
@@ -414,6 +422,7 @@ class SDSAC(OffPolicyAlgorithm):
             # Optimize critic
             self.critic.optimizer.zero_grad()
             critic_loss.backward()
+            th.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=10.0)
             self.critic.optimizer.step()
 
             # ---- Actor update ----
@@ -428,11 +437,15 @@ class SDSAC(OffPolicyAlgorithm):
                     self.critic(replay_data.observations), dim=0
                 )  # (n_critics, B, |A|)
                 q_values_min, _ = q_values_all.min(dim=0)  # (B, |A|)
+                q_values_min = th.nan_to_num(
+                    q_values_min, nan=0.0, posinf=1e6, neginf=-1e6
+                )
 
             # J_pi = E_s [ sum_a pi(a|s) * (alpha * log pi(a|s) - Q(s,a)) ]
             actor_loss = (
                 (probs_pi * (ent_coef * log_probs_pi - q_values_min)).sum(dim=1).mean()
             )
+            actor_loss = th.nan_to_num(actor_loss, nan=0.0, posinf=1e6, neginf=-1e6)
 
             # Entropy-penalty (Algorithm 1, line 12):
             # J_pi += beta * 0.5 * (H_pi_old - H_pi)^2
@@ -453,6 +466,7 @@ class SDSAC(OffPolicyAlgorithm):
             # Optimize actor
             self.actor.optimizer.zero_grad()
             actor_loss.backward()
+            th.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=10.0)
             self.actor.optimizer.step()
 
             # ---- Target network update ----
