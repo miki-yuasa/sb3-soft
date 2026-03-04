@@ -231,7 +231,7 @@ class SDSAC(OffPolicyAlgorithm):
 
         # Entropy coefficient (alpha)
         if isinstance(self.ent_coef, str) and self.ent_coef.startswith("auto"):
-            init_value = 0.1
+            init_value = 0.05
             if "_" in self.ent_coef:
                 init_value = float(self.ent_coef.split("_")[1])
                 assert init_value > 0.0, (
