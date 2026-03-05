@@ -18,7 +18,13 @@ SelfSQL = TypeVar("SelfSQL", bound="SQL")
 
 
 class SQL(OffPolicyAlgorithm):
-    """Discrete-action Soft Q-Learning.
+    """Discrete-action Soft Q-Learning from
+    T. Haarnoja, H. Tang, P. Abbeel, and S. Levine,
+    Reinforcement Learning with Deep Energy-Based Policies,”
+    Proceedings of the 34th International Conference on Machine Learning, PMLR,
+    Jul. 2017, pp. 1352–1361.
+    https://proceedings.mlr.press/v70/haarnoja17a.html
+
 
     Extends SB3's ``OffPolicyAlgorithm`` with an entropy-regularized Bellman
     backup and Boltzmann (softmax) action sampling.
@@ -65,17 +71,12 @@ class SQL(OffPolicyAlgorithm):
         Set to ``"auto"`` (or ``"auto_0.1"``) to learn it automatically.
     target_entropy : str | float, default="auto"
         Target policy entropy used when ``ent_coef`` is learned automatically.
-        If ``"auto"``, uses :math:`0.98 \\log(|\\mathcal{A}|)`.
+        If ``"auto"``, uses :math:`0.98 \\log(|\\mathcal{A}|)`,
+        but this may need adjustment for low-entropy environments.
     action_temperature : float | None, default=None
         Temperature :math:`\tau` for Boltzmann action sampling
         :math:`\\pi(a \\mid s) \\propto \\exp(Q(s, a) / \\tau)`.
         If ``None``, uses ``ent_coef``.
-    use_sde : bool, default=False
-        Whether to use State-Dependent Exploration (SDE) instead of action noise.
-    sde_sample_freq : int, default=-1
-        Sample a new noise matrix every n steps when using SDE.
-    use_sde_at_warmup : bool, default=False
-        Whether to use SDE noise during the warmup phase (before learning starts).
     stats_window_size : int, default=100
         Window size for rollout statistics logging.
     tensorboard_log : str | None, default=None
@@ -123,9 +124,6 @@ class SQL(OffPolicyAlgorithm):
         ent_coef: Union[str, float] = "auto",
         target_entropy: Union[str, float] = "auto",
         action_temperature: float | None = None,
-        use_sde: bool = False,
-        sde_sample_freq: int = -1,
-        use_sde_at_warmup: bool = False,
         stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
         policy_kwargs: Optional[dict[str, Any]] = None,
@@ -193,9 +191,9 @@ class SQL(OffPolicyAlgorithm):
             optimize_memory_usage=optimize_memory_usage,
             n_steps=n_steps,
             policy_kwargs=policy_kwargs,
-            use_sde=use_sde,
-            sde_sample_freq=sde_sample_freq,
-            use_sde_at_warmup=use_sde_at_warmup,
+            use_sde=False,
+            sde_sample_freq=-1,
+            use_sde_at_warmup=False,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             verbose=verbose,

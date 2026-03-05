@@ -48,7 +48,10 @@ SelfSDSAC = TypeVar("SelfSDSAC", bound="SDSAC")
 
 
 class SDSAC(OffPolicyAlgorithm):
-    """Stable Discrete Soft Actor-Critic (SD-SAC).
+    """Stable Discrete Soft Actor-Critic (SD-SAC) from
+    H. Zhou et al., “Revisiting Discrete Soft Actor-Critic,”
+    Transactions on Machine Learning Research, Aug. 2024.
+    https://openreview.net/forum?id=EUF2R6VBeU
 
     An off-policy actor-critic algorithm for discrete action spaces that
     maintains separate actor and twin-critic networks and performs
@@ -108,7 +111,8 @@ class SDSAC(OffPolicyAlgorithm):
         Gradient steps between target network updates.
     target_entropy : str | float, default="auto"
         Target entropy for automatic :math:`\\alpha` tuning.  ``"auto"``
-        uses :math:`0.98 \\log |\\mathcal{A}|`.
+        uses :math:`0.98 \\log |\\mathcal{A}|`,
+        but this may need adjustment for low-entropy environments.
     beta : float, default=0.1
         Entropy-penalty coefficient :math:`\\beta` in the actor loss.
     clip_range : float, default=0.5
