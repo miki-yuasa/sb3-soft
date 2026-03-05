@@ -1,3 +1,9 @@
+"""
+Soft Q-Learning (SQL) implementation for discrete action spaces, based on
+Haarnoha et al. (2017) "Reinforcement Learning with Deep Energy-Based Policies"
+https://proceedings.mlr.press/v70/haarnoja17a.html
+"""
+
 from typing import Any, ClassVar, Optional, TypeVar, Union
 
 import numpy as np

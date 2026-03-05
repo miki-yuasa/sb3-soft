@@ -2,6 +2,7 @@
 
 Actor-critic algorithm for discrete action spaces based on
 Zhou et al. (2024), "Revisiting Discrete Soft Actor-Critic".
+https://openreview.net/forum?id=EUF2R6VBeU
 
 Key differences from continuous SAC and naive discrete SAC:
 
