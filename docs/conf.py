@@ -36,4 +36,3 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_rtd_theme"
 html_title = "sb3-soft documentation"
-html_static_path = ["_static"]
