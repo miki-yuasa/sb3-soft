@@ -1,4 +1,4 @@
-"""Stable Discrete Soft Actor-Critic (SD-SAC).
+"""Stable Discrete Soft Actor-Critic (SDSAC).
 
 Actor-critic algorithm for discrete action spaces based on
 Zhou et al. (2024), "Revisiting Discrete Soft Actor-Critic".
@@ -14,10 +14,10 @@ Key differences from continuous SAC and naive discrete SAC:
 - The actor objective also uses the ``mean`` of twin online critics
   (instead of ``min``) for policy improvement.
 - **Q-clip**: the critic loss is
-  ``max((Q - y)², (Q' + clip(Q - Q', -c, c) - y)²)``.
+    :math:`\\max\\left((Q - y)^2,\\, \\left(Q' + \\mathrm{clip}(Q - Q', -c, c) - y\\right)^2\\right)`.
 - **Entropy-penalty**: the actor loss includes
-  ``β · ½ · (H_πold − H_π)²`` where ``H_πold`` is stored in the
-  replay buffer at collection time.
+    :math:`\\beta \\cdot \\tfrac{1}{2} \\cdot \\left(H_{\\pi_{\\mathrm{old}}} - H_{\\pi}\\right)^2`,
+    where :math:`H_{\\pi_{\\mathrm{old}}}` is stored in the replay buffer at collection time.
 """
 
 from typing import Any, ClassVar, Optional, TypeVar, Union
@@ -61,15 +61,17 @@ class SDSAC(OffPolicyAlgorithm):
     Compared with a naive discrete adaptation of SAC, SD-SAC adds three
     stabilisation mechanisms (Algorithm 1 in the paper):
 
-    1. **Double-average Q-learning** – the Bellman target uses
-       ``mean(Q'_1, Q'_2)`` of the twin target critics instead of ``min``.
-       The actor objective likewise uses the mean of online critics
-       ``mean(Q_1, Q_2)`` in place of a clipped-min estimate.
-    2. **Q-clip** – the critic loss is
-       ``max((Q - y)^2, (Q' + clip(Q - Q', -c, c) - y)^2)``.
-    3. **Entropy penalty** – the actor loss adds
-       ``beta * 0.5 * (H_pi_old - H_pi)^2`` where ``H_pi_old`` is the
-       policy entropy stored in the replay buffer at collection time.
+     1. **Double-average Q-learning** – the Bellman target uses
+         :math:`\\mathrm{mean}(Q'_1, Q'_2)` of the twin target critics instead
+         of ``min``. The actor objective likewise uses the mean of online
+         critics :math:`\\mathrm{mean}(Q_1, Q_2)` in place of a clipped-min
+         estimate.
+     2. **Q-clip** – the critic loss is
+         :math:`\\max\\left((Q - y)^2,\\, \\left(Q' + \\mathrm{clip}(Q - Q', -c, c) - y\\right)^2\\right)`.
+     3. **Entropy penalty** – the actor loss adds
+         :math:`\\beta \\cdot 0.5 \\cdot \\left(H_{\\pi_{\\mathrm{old}}} - H_{\\pi}\\right)^2`,
+         where :math:`H_{\\pi_{\\mathrm{old}}}` is the policy entropy stored in
+         the replay buffer at collection time.
 
 
     Reference: Zhou et al.  (2024) "Revisiting Discrete Soft Actor-Critic".
