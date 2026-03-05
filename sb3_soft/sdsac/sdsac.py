@@ -11,7 +11,7 @@ Key differences from continuous SAC and naive discrete SAC:
 - **Double-average Q-learning**: the target uses ``mean`` (not ``min``)
   of the twin target critics.
 - The actor objective also uses the ``mean`` of twin online critics
-    (instead of ``min``) for policy improvement.
+  (instead of ``min``) for policy improvement.
 - **Q-clip**: the critic loss is
   ``max((Q - y)², (Q' + clip(Q - Q', -c, c) - y)²)``.
 - **Entropy-penalty**: the actor loss includes
@@ -62,13 +62,14 @@ class SDSAC(OffPolicyAlgorithm):
 
     1. **Double-average Q-learning** – the Bellman target uses
        ``mean(Q'_1, Q'_2)`` of the twin target critics instead of ``min``.
-         The actor objective likewise uses the mean of online critics
-         ``mean(Q_1, Q_2)`` in place of a clipped-min estimate.
+       The actor objective likewise uses the mean of online critics
+       ``mean(Q_1, Q_2)`` in place of a clipped-min estimate.
     2. **Q-clip** – the critic loss is
        ``max((Q - y)^2, (Q' + clip(Q - Q', -c, c) - y)^2)``.
     3. **Entropy penalty** – the actor loss adds
        ``beta * 0.5 * (H_pi_old - H_pi)^2`` where ``H_pi_old`` is the
        policy entropy stored in the replay buffer at collection time.
+
 
     Reference: Zhou et al.  (2024) "Revisiting Discrete Soft Actor-Critic".
 

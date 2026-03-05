@@ -1,73 +1,129 @@
 # sb3-soft
-Reinforcement learning algorithms for soft Q targets compatible with Stable-Baselines3.
-Currently only discrete action spaces are supported.
 
-The implemented algorithms are:
-- Soft Q-Learning (SQL),
-- Stable Discrete Soft Actor-Critic (SDSAC).
+`sb3-soft` provides reinforcement learning algorithms with soft Q-targets,
+implemented on top of
+[Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3).
 
+Current scope:
+
+- Discrete action spaces
+- SQL (Soft Q-Learning)
+- SDSAC (Stable Discrete Soft Actor-Critic)
+
+## Why sb3-soft?
+
+- Familiar SB3-style API (`learn`, `predict`, `save`, `load`)
+- Drop-in usage for Gymnasium discrete environments
+- Strong algorithm-focused implementation with clean class-level docstrings
 
 ## Installation
-You can install the package from PyPI:
+
+Install from PyPI:
 
 ```bash
 pip install sb3-soft
-# or using uv
+# or
 uv add sb3-soft
 ```
 
-You can also install directly from GitHub:
+Install the latest development version:
 
 ```bash
 pip install git+https://github.com/miki-yuasa/sb3-soft.git
-# or using uv
+# or
 uv add git+https://github.com/miki-yuasa/sb3-soft.git
 ```
 
-## Usage
+## Quick Start
+
+### SQL
 
 ```python
 from sb3_soft import SQL
+from stable_baselines3.common.env_util import make_vec_env
 
-# Create the environment
-env = ...
+env = make_vec_env("CartPole-v1", n_envs=1)
 
-# Create the model
-model = SQL("MlpPolicy", env, ...)
-
-# Train the model
-model.learn(total_timesteps=10000)
-
-# Save the model
-model.save("sql_model")
-
-# Load the model
-model = SQL.load("sql_model")
+model = SQL(
+    "MlpPolicy",
+    env,
+    learning_rate=1e-4,
+    buffer_size=100_000,
+    verbose=1,
+)
+model.learn(total_timesteps=100_000)
+model.save("sql_cartpole")
 ```
 
-## Publishing to PyPI (uv)
+### SDSAC
 
-1. Bump the version in `pyproject.toml`.
-2. Build distributions:
+```python
+from sb3_soft import SDSAC
+from stable_baselines3.common.env_util import make_vec_env
+
+env = make_vec_env("CartPole-v1", n_envs=1)
+
+model = SDSAC(
+    "MlpPolicy",
+    env,
+    learning_rate=3e-4,
+    buffer_size=100_000,
+    batch_size=256,
+    verbose=1,
+)
+model.learn(total_timesteps=100_000)
+model.save("sdsac_cartpole")
+```
+
+## Algorithms
+
+### SQL (Soft Q-Learning)
+
+- Entropy-regularized Bellman backups via soft value targets
+- Boltzmann (softmax) sampling over Q-values
+- Optional automatic entropy-coefficient tuning
+
+### SDSAC (Stable Discrete SAC)
+
+- Categorical actor + twin critics for discrete actions
+- Double-average Q-learning (mean twin target)
+- Q-clip critic loss and entropy-penalty term for stability
+- Replay buffers that store per-transition old policy entropy
+
+## Documentation
+
+- API and usage docs: https://miki-yuasa.github.io/sb3-soft/
+- Documentation is generated from in-code docstrings using Sphinx.
+
+Build docs locally:
 
 ```bash
-uv build
+uv sync --group dev
+cd docs
+uv run sphinx-build -b html . _build/html
 ```
 
-3. (Optional) Publish to TestPyPI first:
+## Development
+
+Set up a local development environment:
 
 ```bash
-export UV_PUBLISH_URL="https://test.pypi.org/legacy/"
-export UV_PUBLISH_TOKEN="<testpypi-token>"
-uv publish
-unset UV_PUBLISH_URL
+uv sync --group dev --group lint
 ```
 
-4. Publish to PyPI:
+Run tests:
 
 ```bash
-export UV_PUBLISH_TOKEN="<pypi-token>"
-uv publish
+uv run pytest
 ```
 
-You can also pass the token directly with `uv publish --token <token>`.
+## Citation
+
+```bibtex
+@misc{yuasa2026sb3soft,
+  author = {Yuasa, Mikihisa},
+  title = {sb3-soft},
+  year = {2026},
+  howpublished = {\url{https://github.com/miki-yuasa/sb3-soft}}
+}
+```
