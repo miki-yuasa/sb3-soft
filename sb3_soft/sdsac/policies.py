@@ -11,6 +11,11 @@ from typing import Any, Optional, Union
 
 import torch as th
 from gymnasium import spaces
+from stable_baselines3.common.distributions import (
+    CategoricalDistribution,
+    Distribution,
+    MultiCategoricalDistribution,
+)
 from stable_baselines3.common.policies import BaseModel, BasePolicy
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
@@ -49,6 +54,7 @@ class DiscreteActor(BasePolicy):
     """
 
     action_space: spaces.Discrete
+    action_dist: Union[CategoricalDistribution, MultiCategoricalDistribution]
 
     def __init__(
         self,
@@ -71,11 +77,22 @@ class DiscreteActor(BasePolicy):
         self.features_dim = features_dim
         self.activation_fn = activation_fn
 
-        n_actions = int(action_space.n)
         latent_net = create_mlp(features_dim, -1, net_arch, activation_fn)
         self.latent_pi = nn.Sequential(*latent_net)
         last_layer_dim = net_arch[-1] if len(net_arch) > 0 else features_dim
-        self.action_logits = nn.Linear(last_layer_dim, n_actions)
+
+        if isinstance(action_space, spaces.Discrete):
+            self.action_dist = CategoricalDistribution(int(action_space.n))
+        elif isinstance(action_space, spaces.MultiDiscrete):
+            self.action_dist = MultiCategoricalDistribution(list(action_space.nvec))
+        else:
+            raise NotImplementedError(
+                f"Unsupported action space type for DiscreteActor: {type(action_space)}"
+            )
+
+        self.action_net = self.action_dist.proba_distribution_net(
+            latent_dim=last_layer_dim
+        )
 
     def get_action_dist_params(self, obs: PyTorchObs) -> th.Tensor:
         """Compute action logits from observations.
@@ -92,7 +109,15 @@ class DiscreteActor(BasePolicy):
         """
         features = self.extract_features(obs, self.features_extractor)
         latent = self.latent_pi(features)
-        return self.action_logits(latent)
+        return self.action_net(latent)
+
+    def _get_action_dist_from_latent(self, latent_pi: th.Tensor) -> Distribution:
+        action_logits = self.action_net(latent_pi)
+        if isinstance(self.action_dist, CategoricalDistribution):
+            return self.action_dist.proba_distribution(action_logits=action_logits)
+        if isinstance(self.action_dist, MultiCategoricalDistribution):
+            return self.action_dist.proba_distribution(action_logits=action_logits)
+        raise ValueError("Invalid action distribution")
 
     def get_action_probs(
         self, obs: PyTorchObs, epsilon: float = 1e-8
@@ -111,11 +136,22 @@ class DiscreteActor(BasePolicy):
         tuple[th.Tensor, th.Tensor]
             Tuple ``(probs, log_probs)``, each of shape ``(batch, n_actions)``.
         """
+        del epsilon
         logits = self.get_action_dist_params(obs)
-        # Stable softmax via log_softmax
-        log_probs = th.log_softmax(logits, dim=-1)
-        probs = log_probs.exp()
-        # Clamp for numerical stability
+        distribution = self.action_dist.proba_distribution(action_logits=logits)
+        if isinstance(distribution, CategoricalDistribution):
+            probs = distribution.distribution.probs
+            log_probs = distribution.distribution.logits
+        elif isinstance(distribution, MultiCategoricalDistribution):
+            # SDSAC currently supports only Discrete action spaces.
+            probs = th.cat([dist.probs for dist in distribution.distribution], dim=1)
+            log_probs = th.cat(
+                [dist.logits for dist in distribution.distribution], dim=1
+            )
+        else:
+            raise ValueError("Invalid action distribution")
+
+        # Clamp for numerical stability in entropy/loss computations.
         log_probs = th.clamp(log_probs, min=th.finfo(log_probs.dtype).min)
         return probs, log_probs
 
@@ -134,11 +170,14 @@ class DiscreteActor(BasePolicy):
         th.Tensor
             Selected action indices of shape ``(batch,)``.
         """
-        logits = self.get_action_dist_params(obs)
-        if deterministic:
-            return logits.argmax(dim=-1)
-        probs = th.softmax(logits, dim=-1)
-        return th.multinomial(probs, num_samples=1).squeeze(-1)
+        distribution = self.get_distribution(obs)
+        return distribution.get_actions(deterministic=deterministic)
+
+    def get_distribution(self, obs: PyTorchObs) -> Distribution:
+        """Get the current policy distribution given observations."""
+        features = super().extract_features(obs, self.features_extractor)
+        latent_pi = self.latent_pi(features)
+        return self._get_action_dist_from_latent(latent_pi)
 
     def _predict(
         self, observation: PyTorchObs, deterministic: bool = False
@@ -402,6 +441,36 @@ class SDSACPolicy(BasePolicy):
         self, observation: PyTorchObs, deterministic: bool = False
     ) -> th.Tensor:
         return self.actor(observation, deterministic)
+
+    def evaluate_actions(
+        self, obs: PyTorchObs, actions: th.Tensor
+    ) -> tuple[th.Tensor, th.Tensor, Optional[th.Tensor]]:
+        """Evaluate actions using current actor distribution and critics.
+
+        Returns the mean twin-critic Q-value for the provided actions,
+        action log-probabilities under the current actor and distribution entropy.
+        """
+        distribution = self.get_distribution(obs)
+        action_indices = actions.long().reshape(-1)
+        log_prob = distribution.log_prob(action_indices)
+        entropy = distribution.entropy()
+
+        q_values_all = th.stack(self.critic(obs), dim=0).mean(dim=0)
+        values = th.gather(q_values_all, dim=1, index=action_indices.unsqueeze(-1))
+        return values, log_prob, entropy
+
+    def get_distribution(self, obs: PyTorchObs) -> Distribution:
+        """Get the current actor distribution given observations."""
+        return self.actor.get_distribution(obs)
+
+    def predict_values(self, obs: PyTorchObs) -> th.Tensor:
+        """Estimate state values under the current policy.
+
+        Computes V(s) = sum_a pi(a|s) * mean_i Q_i(s, a).
+        """
+        probs, _ = self.actor.get_action_probs(obs)
+        q_values_all = th.stack(self.critic(obs), dim=0).mean(dim=0)
+        return (probs * q_values_all).sum(dim=1, keepdim=True)
 
     def set_training_mode(self, mode: bool) -> None:
         self.actor.set_training_mode(mode)
