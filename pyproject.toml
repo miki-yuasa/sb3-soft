@@ -1,6 +1,6 @@
 [project]
 name = "sb3-soft"
-version = "0.1.0"
+version = "0.1.1"
 description = "Soft Q-target reinforcement learning algorithms for Stable-Baselines3"
 readme = "README.md"
 requires-python = ">=3.10"
