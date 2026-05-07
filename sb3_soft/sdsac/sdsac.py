@@ -403,30 +403,36 @@ class SDSAC(OffPolicyAlgorithm):
 
             # Q-clip loss (Algorithm 1, line 10):
             # L(theta_i) = max((Q_i - y)^2, (Q'_i + clip(Q_i - Q'_i, -c, c) - y)^2)
-            critic_loss = th.zeros(1, device=self.device)
-            q_taken_means: list[th.Tensor] = []
-            for q_local, q_target in zip(current_q_all, target_q_all):
-                q_local_a = th.gather(q_local, dim=1, index=actions_long)  # (B, 1)
-                q_target_a = th.gather(q_target, dim=1, index=actions_long)  # (B, 1)
-                q_local_a = th.nan_to_num(q_local_a, nan=0.0, posinf=1e6, neginf=-1e6)
-                q_target_a = th.nan_to_num(q_target_a, nan=0.0, posinf=1e6, neginf=-1e6)
-                q_taken_means.append(q_local_a.mean())
-                loss_plain = (q_local_a - target_q_values).pow(2)  # (B, 1)
-                q_clipped = q_target_a + th.clamp(
-                    q_local_a - q_target_a,
-                    -self.clip_range,
-                    self.clip_range,
-                )
-                loss_clipped = (q_clipped - target_q_values).pow(2)  # (B, 1)
-                critic_loss = critic_loss + th.max(loss_plain, loss_clipped).mean()
+            # Vectorised: stack all critics, gather taken actions, compute in batch.
+            current_q_stacked = th.stack(current_q_all, dim=0)  # (n_critics, B, |A|)
+            target_q_stacked = th.stack(target_q_all, dim=0)    # (n_critics, B, |A|)
 
-            if len(q_taken_means) > 0:
-                q_value_means.append(th.stack(q_taken_means).mean().item())
-                q_value_means_qf0.append(q_taken_means[0].item())
-                if len(q_taken_means) > 1:
-                    q_value_means_qf1.append(q_taken_means[1].item())
+            # Gather Q-values for the taken actions: (n_critics, B, 1)
+            actions_expanded = actions_long.unsqueeze(0).expand(
+                current_q_stacked.shape[0], -1, -1
+            )
+            q_local_a = th.gather(current_q_stacked, dim=2, index=actions_expanded)
+            q_target_a = th.gather(target_q_stacked, dim=2, index=actions_expanded)
+            q_local_a = th.nan_to_num(q_local_a, nan=0.0, posinf=1e6, neginf=-1e6)
+            q_target_a = th.nan_to_num(q_target_a, nan=0.0, posinf=1e6, neginf=-1e6)
 
-            assert isinstance(critic_loss, th.Tensor)
+            loss_plain = (q_local_a - target_q_values.unsqueeze(0)).pow(2)
+            q_clipped = q_target_a + th.clamp(
+                q_local_a - q_target_a,
+                -self.clip_range,
+                self.clip_range,
+            )
+            loss_clipped = (q_clipped - target_q_values.unsqueeze(0)).pow(2)
+            # Sum over critics, mean over batch
+            critic_loss = th.max(loss_plain, loss_clipped).mean(dim=(1, 2)).sum()
+
+            # Logging: per-critic mean Q-values for taken actions
+            q_taken_per_critic = q_local_a.mean(dim=(1, 2))  # (n_critics,)
+            q_value_means.append(q_taken_per_critic.mean().item())
+            q_value_means_qf0.append(q_taken_per_critic[0].item())
+            if q_taken_per_critic.shape[0] > 1:
+                q_value_means_qf1.append(q_taken_per_critic[1].item())
+
             critic_losses.append(critic_loss.item())
 
             # Optimize critic
@@ -436,37 +442,30 @@ class SDSAC(OffPolicyAlgorithm):
             self.critic.optimizer.step()
 
             # ---- Actor update ----
-            # Re-compute probs with fresh graph (critic was just updated)
-            probs_pi, log_probs_pi = self.actor.get_action_probs(
-                replay_data.observations
+            # Reuse probs/log_probs from the actor forward pass above (line ①).
+            # The actor computation graph is independent of critic parameters,
+            # so the critic optimizer step does not invalidate these tensors.
+            # Q-values are detached from the critic graph (no grad through critic
+            # for the actor objective).
+            q_values_avg = current_q_stacked.detach().mean(dim=0)  # (B, |A|)
+            q_values_avg = th.nan_to_num(
+                q_values_avg, nan=0.0, posinf=1e6, neginf=-1e6
             )
-
-            # Q-values from all critics (no grad through critic)
-            with th.no_grad():
-                q_values_all = th.stack(
-                    self.critic(replay_data.observations), dim=0
-                )  # (n_critics, B, |A|)
-                q_values_avg = q_values_all.mean(dim=0)  # (B, |A|)
-                q_values_avg = th.nan_to_num(
-                    q_values_avg, nan=0.0, posinf=1e6, neginf=-1e6
-                )
 
             # J_pi = E_s [ sum_a pi(a|s) * (alpha * log pi(a|s) - Q(s,a)) ]
             actor_loss = (
-                (probs_pi * (ent_coef * log_probs_pi - q_values_avg)).sum(dim=1).mean()
+                (probs * (ent_coef * log_probs - q_values_avg)).sum(dim=1).mean()
             )
             actor_loss = th.nan_to_num(actor_loss, nan=0.0, posinf=1e6, neginf=-1e6)
 
             # Entropy-penalty (Algorithm 1, line 12):
             # J_pi += beta * 0.5 * (H_pi_old - H_pi)^2
-            current_entropy = -(probs_pi * log_probs_pi).sum(
-                dim=1, keepdim=True
-            )  # (B, 1)
+            # Reuse entropy computed above for entropy-coef loss.
             assert isinstance(replay_data, SDSACReplayBufferSamples)
             entropy_penalty = (
                 self.beta
                 * 0.5
-                * (replay_data.old_entropies - current_entropy).pow(2).mean()
+                * (replay_data.old_entropies - entropy).pow(2).mean()
             )
             actor_loss = actor_loss + entropy_penalty
 
