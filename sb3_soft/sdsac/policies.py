@@ -39,8 +39,8 @@ class DiscreteActor(BasePolicy):
     ----------
     observation_space : spaces.Space
         Observation space.
-    action_space : spaces.Discrete
-        Discrete action space.
+    action_space : spaces.Discrete | spaces.MultiDiscrete
+        Discrete or MultiDiscrete action space.
     net_arch : list[int]
         Network architecture (list of hidden layer sizes).
     features_extractor : nn.Module
@@ -53,13 +53,13 @@ class DiscreteActor(BasePolicy):
         Whether to normalize images by dividing by 255.
     """
 
-    action_space: spaces.Discrete
+    action_space: Union[spaces.Discrete, spaces.MultiDiscrete]
     action_dist: Union[CategoricalDistribution, MultiCategoricalDistribution]
 
     def __init__(
         self,
         observation_space: spaces.Space,
-        action_space: spaces.Discrete,
+        action_space: Union[spaces.Discrete, spaces.MultiDiscrete],
         net_arch: list[int],
         features_extractor: nn.Module,
         features_dim: int,
@@ -208,8 +208,8 @@ class DiscreteCritic(BaseModel):
     ----------
     observation_space : spaces.Space
         Observation space.
-    action_space : spaces.Discrete
-        Discrete action space.
+    action_space : spaces.Discrete | spaces.MultiDiscrete
+        Discrete or MultiDiscrete action space.
     net_arch : list[int]
         Network architecture for each Q-network.
     features_extractor : BaseFeaturesExtractor
@@ -232,7 +232,7 @@ class DiscreteCritic(BaseModel):
     def __init__(
         self,
         observation_space: spaces.Space,
-        action_space: spaces.Discrete,
+        action_space: Union[spaces.Discrete, spaces.MultiDiscrete],
         net_arch: list[int],
         features_extractor: BaseFeaturesExtractor,
         features_dim: int,
@@ -248,7 +248,10 @@ class DiscreteCritic(BaseModel):
             normalize_images=normalize_images,
         )
 
-        n_actions = int(action_space.n)
+        if isinstance(action_space, spaces.MultiDiscrete):
+            n_actions = int(sum(action_space.nvec))
+        else:
+            n_actions = int(action_space.n)
         self.share_features_extractor = share_features_extractor
         self.n_critics = n_critics
         self.q_networks: list[nn.Module] = []
@@ -301,8 +304,8 @@ class SDSACPolicy(BasePolicy):
     ----------
     observation_space : spaces.Space
         Observation space.
-    action_space : spaces.Discrete
-        Discrete action space.
+    action_space : spaces.Discrete | spaces.MultiDiscrete
+        Discrete or MultiDiscrete action space.
     lr_schedule : Schedule
         Learning rate schedule.
     net_arch : Optional[Union[list[int], dict[str, list[int]]]], default=None
@@ -333,7 +336,7 @@ class SDSACPolicy(BasePolicy):
     def __init__(
         self,
         observation_space: spaces.Space,
-        action_space: spaces.Discrete,
+        action_space: Union[spaces.Discrete, spaces.MultiDiscrete],
         lr_schedule: Schedule,
         net_arch: Optional[Union[list[int], dict[str, list[int]]]] = None,
         activation_fn: type[nn.Module] = nn.ReLU,
@@ -451,13 +454,28 @@ class SDSACPolicy(BasePolicy):
         action log-probabilities under the current actor and distribution entropy.
         """
         distribution = self.get_distribution(obs)
-        action_indices = actions.long().reshape(-1)
-        log_prob = distribution.log_prob(action_indices)
-        entropy = distribution.entropy()
 
-        q_values_all = th.stack(self.critic(obs), dim=0).mean(dim=0)
-        values = th.gather(q_values_all, dim=1, index=action_indices.unsqueeze(-1))
-        return values, log_prob, entropy
+        q_values_all = th.stack(self.critic(obs), dim=0).mean(dim=0)  # (B, total_actions)
+
+        if isinstance(self.action_space, spaces.MultiDiscrete):
+            nvec = list(self.action_space.nvec)
+            action_indices = actions.long()  # (B, n_sub)
+            log_prob = distribution.log_prob(action_indices)  # (B,) summed
+            entropy = distribution.entropy()  # (B,) summed
+
+            # Gather Q per sub-action, then sum
+            q_splits = th.split(q_values_all, nvec, dim=1)
+            q_gathered = th.stack(
+                [th.gather(q_s, 1, action_indices[:, i:i+1]) for i, q_s in enumerate(q_splits)],
+                dim=1,
+            ).sum(dim=1)  # (B, 1)
+            return q_gathered, log_prob, entropy
+        else:
+            action_indices = actions.long().reshape(-1)
+            log_prob = distribution.log_prob(action_indices)
+            entropy = distribution.entropy()
+            values = th.gather(q_values_all, dim=1, index=action_indices.unsqueeze(-1))
+            return values, log_prob, entropy
 
     def get_distribution(self, obs: PyTorchObs) -> Distribution:
         """Get the current actor distribution given observations."""
@@ -466,10 +484,13 @@ class SDSACPolicy(BasePolicy):
     def predict_values(self, obs: PyTorchObs) -> th.Tensor:
         """Estimate state values under the current policy.
 
-        Computes V(s) = sum_a pi(a|s) * mean_i Q_i(s, a).
+        For Discrete: V(s) = sum_a pi(a|s) * mean_i Q_i(s, a).
+        For MultiDiscrete (factored): V(s) = sum_k sum_{a_k} pi_k(a_k|s) * Q_k(s, a_k).
         """
-        probs, _ = self.actor.get_action_probs(obs)
-        q_values_all = th.stack(self.critic(obs), dim=0).mean(dim=0)
+        probs, _ = self.actor.get_action_probs(obs)  # (B, total_actions)
+        q_values_all = th.stack(self.critic(obs), dim=0).mean(dim=0)  # (B, total_actions)
+        # Element-wise product then sum works identically for both Discrete and
+        # MultiDiscrete because the factored sub-action probs/Q are concatenated.
         return (probs * q_values_all).sum(dim=1, keepdim=True)
 
     def set_training_mode(self, mode: bool) -> None:
@@ -538,7 +559,7 @@ class MultiInputPolicy(SDSACPolicy):
     def __init__(
         self,
         observation_space: spaces.Space,
-        action_space: spaces.Discrete,
+        action_space: Union[spaces.Discrete, spaces.MultiDiscrete],
         lr_schedule: Schedule,
         net_arch: Optional[Union[list[int], dict[str, list[int]]]] = None,
         activation_fn: type[nn.Module] = nn.ReLU,

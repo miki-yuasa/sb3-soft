@@ -198,7 +198,7 @@ class SDSAC(OffPolicyAlgorithm):
             device=device,
             seed=seed,
             sde_support=False,
-            supported_action_spaces=(spaces.Discrete,),
+            supported_action_spaces=(spaces.Discrete, spaces.MultiDiscrete),
             support_multi_env=True,
         )
 
@@ -235,9 +235,15 @@ class SDSAC(OffPolicyAlgorithm):
 
         # Target entropy
         if self.target_entropy == "auto":
-            assert isinstance(self.action_space, spaces.Discrete)
-            # 0.98 * log(|A|) as suggested in the paper
-            self.target_entropy = float(0.98 * np.log(self.action_space.n))
+            if isinstance(self.action_space, spaces.MultiDiscrete):
+                # Sum of per-sub-action max entropies (factored policy)
+                self.target_entropy = float(
+                    0.98 * sum(np.log(n) for n in self.action_space.nvec)
+                )
+            else:
+                assert isinstance(self.action_space, spaces.Discrete)
+                # 0.98 * log(|A|) as suggested in the paper
+                self.target_entropy = float(0.98 * np.log(self.action_space.n))
         else:
             self.target_entropy = float(self.target_entropy)
 
@@ -295,6 +301,29 @@ class SDSAC(OffPolicyAlgorithm):
         super()._store_transition(
             replay_buffer, buffer_action, new_obs, reward, dones, infos
         )
+
+    def _get_action_gather_index(
+        self, actions_long: th.Tensor
+    ) -> th.Tensor:
+        """Convert raw action indices to offset-adjusted gather indices.
+
+        For ``Discrete``, actions are ``(B, 1)`` and returned as-is.
+        For ``MultiDiscrete([n0, n1, ...])``, actions are ``(B, n_sub)``
+        with values in ``[0, n_k)`` for each sub-action ``k``.  We add
+        cumulative offsets so that they index into the concatenated
+        Q-value vector of size ``sum(nvec)``.
+
+        Returns
+        -------
+        th.Tensor
+            Gather indices of shape ``(B, n_sub)`` (or ``(B, 1)`` for Discrete).
+        """
+        if isinstance(self.action_space, spaces.MultiDiscrete):
+            nvec = self.action_space.nvec
+            offsets = np.concatenate([[0], np.cumsum(nvec[:-1])])
+            offsets_t = th.tensor(offsets, device=actions_long.device, dtype=th.long)
+            return actions_long + offsets_t.unsqueeze(0)  # (B, n_sub)
+        return actions_long  # (B, 1) for Discrete
 
     # ------------------------------------------------------------------
     # Training
@@ -407,12 +436,20 @@ class SDSAC(OffPolicyAlgorithm):
             current_q_stacked = th.stack(current_q_all, dim=0)  # (n_critics, B, |A|)
             target_q_stacked = th.stack(target_q_all, dim=0)    # (n_critics, B, |A|)
 
-            # Gather Q-values for the taken actions: (n_critics, B, 1)
-            actions_expanded = actions_long.unsqueeze(0).expand(
+            # Gather Q-values for the taken actions.
+            # For Discrete: actions_gather is (B, 1); gathered shape (n_critics, B, 1).
+            # For MultiDiscrete: actions_gather is (B, n_sub) with offsets;
+            #   gathered shape (n_critics, B, n_sub), then summed → (n_critics, B, 1).
+            actions_gather = self._get_action_gather_index(actions_long)  # (B, k)
+            actions_expanded = actions_gather.unsqueeze(0).expand(
                 current_q_stacked.shape[0], -1, -1
-            )
+            )  # (n_critics, B, k)
             q_local_a = th.gather(current_q_stacked, dim=2, index=actions_expanded)
             q_target_a = th.gather(target_q_stacked, dim=2, index=actions_expanded)
+            # For MultiDiscrete, sum over sub-actions to get total Q(s, a)
+            if isinstance(self.action_space, spaces.MultiDiscrete):
+                q_local_a = q_local_a.sum(dim=2, keepdim=True)   # (n_critics, B, 1)
+                q_target_a = q_target_a.sum(dim=2, keepdim=True)  # (n_critics, B, 1)
             q_local_a = th.nan_to_num(q_local_a, nan=0.0, posinf=1e6, neginf=-1e6)
             q_target_a = th.nan_to_num(q_target_a, nan=0.0, posinf=1e6, neginf=-1e6)
 
